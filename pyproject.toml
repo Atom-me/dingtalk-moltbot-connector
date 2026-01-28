@@ -30,8 +30,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/nicexm/dingtalk-moltbot-connector"
-Repository = "https://github.com/nicexm/dingtalk-moltbot-connector"
+Homepage = "https://github.com/DingTalk-Real-AI/dingtalk-moltbot-connector"
+Repository = "https://github.com/DingTalk-Real-AI/dingtalk-moltbot-connector"
 
 [project.scripts]
 dingtalk-moltbot = "dingtalk_moltbot_connector.connector:cli_main"
