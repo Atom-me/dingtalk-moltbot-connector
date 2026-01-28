@@ -1,0 +1,238 @@
+# dingtalk-moltbot-connector
+
+将钉钉机器人连接到 [Moltbot](https://moltbot.com) / [Clawdbot](https://clawdbot.com) Gateway，支持 AI Card 流式响应。
+
+提供两种实现：
+
+| | **TypeScript 插件** | **Python 独立连接器** |
+|---|---|---|
+| 运行方式 | Moltbot/Clawdbot 内置插件 | 独立进程 |
+| 入口文件 | `plugin.ts` | `src/dingtalk_moltbot_connector/` |
+| AI Card 流式 | 手动调用钉钉 REST API | 使用 `dingtalk-stream` SDK 内置方法 |
+| 图片处理 | system prompt 引导 + **后处理自动上传** | system prompt 引导 |
+| 安装方式 | `moltbot plugins install` | `pip install -e .` |
+
+## 架构
+
+```mermaid
+graph LR
+    subgraph "钉钉"
+        A["用户发消息"] --> B["Stream WebSocket"]
+        E["AI 流式卡片"] --> F["用户看到回复"]
+    end
+
+    subgraph "Connector"
+        B --> C["消息处理器"]
+        C -->|"HTTP SSE"| D["Gateway /v1/chat/completions"]
+        D -->|"流式 chunk"| C
+        C -->|"streaming API"| E
+    end
+```
+
+## 方式一：Moltbot / Clawdbot 插件（推荐）
+
+### 1. 安装插件
+
+```bash
+# 远程安装
+moltbot plugins install https://github.com/DingTalk-Real-AI/dingtalk-moltbot-connector.git
+
+# 或本地开发模式
+git clone https://github.com/DingTalk-Real-AI/dingtalk-moltbot-connector.git
+moltbot plugins install -l ./dingtalk-moltbot-connector
+```
+
+### 2. 配置
+
+在 `~/.moltbot/moltbot.json`（或 `~/.clawdbot/clawdbot.json`）中添加：
+
+```json5
+{
+  channels: {
+    dingtalk: {
+      enabled: true,
+      clientId: "dingxxxxxxxxx",       // 钉钉 AppKey
+      clientSecret: "your_secret_here", // 钉钉 AppSecret
+      enableMediaUpload: true,          // 可选：图片上传（默认开启）
+      systemPrompt: "",                 // 可选：自定义 system prompt
+    }
+  }
+}
+```
+
+### 3. 重启 Gateway
+
+```bash
+moltbot gateway restart
+```
+
+验证：
+
+```bash
+moltbot plugins list               # 确认 dingtalk-connector 已加载
+moltbot gateway rpc dingtalk.probe  # 检查连通性
+```
+
+---
+
+## 方式二：独立 Python 连接器
+
+不依赖插件系统，独立运行的轻量桥接服务。
+
+### 前置条件
+
+- **Python** 3.10+
+- **Gateway** 已在本地或远程运行
+- **钉钉机器人** 已创建并配置为 Stream 模式
+
+### 1. 安装并启动
+
+```bash
+git clone https://github.com/DingTalk-Real-AI/dingtalk-moltbot-connector.git
+cd dingtalk-moltbot-connector
+pip install -e .
+
+# 交互式启动
+python examples/quick_start.py
+```
+
+### 2. 其他启动方式
+
+**环境变量：**
+
+```bash
+export DINGTALK_CLIENT_ID="dingxxxxxxxxx"
+export DINGTALK_CLIENT_SECRET="your_secret_here"
+
+python -c "from dingtalk_moltbot_connector import MoltbotConnector; MoltbotConnector.from_env().start()"
+```
+
+**CLI：**
+
+```bash
+dingtalk-moltbot --gateway-url http://127.0.0.1:18789
+```
+
+**代码集成：**
+
+```python
+from dingtalk_moltbot_connector import MoltbotConnector
+
+connector = MoltbotConnector(
+    dingtalk_client_id="dingxxxxxxxxx",
+    dingtalk_client_secret="your_secret_here",
+    gateway_url="http://127.0.0.1:18789",
+)
+connector.start()
+```
+
+---
+
+## 创建钉钉机器人
+
+1. 打开 [钉钉开放平台](https://open.dingtalk.com/)
+2. 进入 **应用开发** → **企业内部开发** → 创建应用
+3. 添加 **机器人** 能力，消息接收模式选择 **Stream 模式**
+4. 开通权限：
+   - `Card.Streaming.Write`
+   - `Card.Instance.Write`
+   - `qyapi_robot_sendmsg`
+5. **发布应用**，记录 **AppKey** 和 **AppSecret**
+
+## 配置参考
+
+### 插件模式配置项
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `clientId` | `string` | — | 钉钉 AppKey（必填） |
+| `clientSecret` | `string` | — | 钉钉 AppSecret（必填） |
+| `enableMediaUpload` | `boolean` | `true` | 图片上传（prompt 引导 + 后处理） |
+| `systemPrompt` | `string` | `""` | 自定义 system prompt |
+| `dmPolicy` | `string` | `"open"` | 私聊策略：`open` / `pairing` / `allowlist` |
+| `groupPolicy` | `string` | `"open"` | 群聊策略：`open` / `allowlist` |
+
+### Python 连接器参数
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `dingtalk_client_id` | `str` | — | 钉钉 AppKey（必填） |
+| `dingtalk_client_secret` | `str` | — | 钉钉 AppSecret（必填） |
+| `gateway_url` | `str` | `http://127.0.0.1:18789` | Gateway 地址 |
+| `model` | `str` | `default` | 模型名称 |
+| `enable_media_upload` | `bool` | `True` | 图片上传引导 |
+| `system_prompt` | `str` | `""` | 自定义 system prompt |
+| `timeout` | `float` | `120.0` | SSE 超时秒数 |
+| `gateway_token` | `str` | `""` | Gateway 认证 token |
+
+### 环境变量
+
+| 环境变量 | 对应参数 |
+|---------|---------|
+| `DINGTALK_CLIENT_ID` | `dingtalk_client_id` |
+| `DINGTALK_CLIENT_SECRET` | `dingtalk_client_secret` |
+| `MOLTBOT_GATEWAY_URL` | `gateway_url` |
+| `MOLTBOT_MODEL` | `model` |
+| `MOLTBOT_GATEWAY_TOKEN` | `gateway_token` |
+
+## 项目结构
+
+```
+dingtalk-moltbot-connector/
+├── plugin.ts                 # TS 插件入口（Moltbot/Clawdbot）
+├── clawdbot.plugin.json      # Clawdbot 插件清单
+├── moltbot.plugin.json       # Moltbot 插件清单
+├── package.json              # npm 依赖（插件模式）
+├── src/                      # Python 独立连接器
+│   └── dingtalk_moltbot_connector/
+│       ├── __init__.py
+│       ├── connector.py      # MoltbotConnector 主类
+│       ├── handler.py        # 钉钉消息处理器
+│       ├── config.py         # 配置管理
+│       └── media.py          # 图片上传辅助
+├── examples/
+│   ├── quick_start.py        # 交互式快速启动
+│   ├── env_start.py          # 环境变量方式
+│   └── custom_prompt.py      # 自定义 prompt
+├── pyproject.toml            # Python 包配置
+└── LICENSE
+```
+
+## 常见问题
+
+### Q: 钉钉机器人无响应
+
+1. 确认 Gateway 正在运行：`curl http://127.0.0.1:18789/health`
+2. 确认机器人配置为 **Stream 模式**（非 Webhook）
+3. 确认 AppKey/AppSecret 正确
+
+### Q: AI Card 不显示，只有纯文本
+
+需要开通权限 `Card.Streaming.Write` 和 `Card.Instance.Write`，并重新发布应用。
+
+### Q: 图片不显示
+
+1. 确认 `enableMediaUpload: true`（默认开启）
+2. TS 插件会自动后处理上传，检查日志 `[DingTalk][Media]` 相关输出
+3. 确认钉钉应用有图片上传权限
+
+## 依赖
+
+**TypeScript 插件：**
+
+| 包 | 用途 |
+|----|------|
+| `dingtalk-stream` | 钉钉 Stream 协议客户端 |
+| `axios` | HTTP 客户端 |
+| `form-data` | 图片上传 multipart |
+
+**Python 连接器：**
+
+| 包 | 用途 |
+|----|------|
+| `dingtalk-stream` | 钉钉 Stream 协议 + AI Card SDK |
+| `httpx` | 异步 HTTP 客户端（SSE 流） |
+
+## License
+
+[MIT](LICENSE)
