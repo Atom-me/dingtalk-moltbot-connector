@@ -148,24 +148,7 @@ function buildMediaSystemPrompt(): string {
 
 直接输出本地路径即可，系统会自动上传到钉钉。
 
-### 二、文件分享
-
-**何时分享文件**：
-- ✅ 用户明确要求**分享、发送、上传**文件时
-- ❌ 仅生成文件保存到本地时，**不需要**分享
-
-**文件标记格式**：
-当需要分享文件时，在回复**末尾**添加：
-
-\`\`\`
-[DINGTALK_FILE]{"path":"<本地文件路径>","fileName":"<文件名>","fileType":"<扩展名>"}[/DINGTALK_FILE]
-\`\`\`
-
-**支持的文件类型**：几乎所有常见格式
-
-**重要**：文件大小不得超过 20MB，超过限制时告知用户文件过大。
-
-### 三、视频分享
+### 二、视频分享
 
 **何时分享视频**：
 - ✅ 用户明确要求**分享、发送、上传**视频时
@@ -183,7 +166,43 @@ function buildMediaSystemPrompt(): string {
 **重要**：
 - 视频大小不得超过 20MB，超过限制时告知用户
 - 仅支持 mp4 格式
-- 系统会自动提取视频时长、分辨率并生成封面`;
+- 系统会自动提取视频时长、分辨率并生成封面
+
+### 三、音频分享
+
+**何时分享音频**：
+- ✅ 用户明确要求**分享、发送、上传**音频/语音文件时
+- ❌ 仅生成音频保存到本地时，**不需要**分享
+
+**音频标记格式**：
+当需要分享音频时，在回复**末尾**添加：
+
+\`\`\`
+[DINGTALK_AUDIO]{"path":"<本地音频路径>"}[/DINGTALK_AUDIO]
+\`\`\`
+
+**支持格式**：ogg、amr（最大 20MB）
+
+**重要**：
+- 音频大小不得超过 20MB，超过限制时告知用户
+- 系统会自动提取音频时长
+
+### 四、文件分享
+
+**何时分享文件**：
+- ✅ 用户明确要求**分享、发送、上传**文件时
+- ❌ 仅生成文件保存到本地时，**不需要**分享
+
+**文件标记格式**：
+当需要分享文件时，在回复**末尾**添加：
+
+\`\`\`
+[DINGTALK_FILE]{"path":"<本地文件路径>","fileName":"<文件名>","fileType":"<扩展名>"}[/DINGTALK_FILE]
+\`\`\`
+
+**支持的文件类型**：几乎所有常见格式
+
+**重要**：文件大小不得超过 20MB，超过限制时告知用户文件过大。`;
 }
 
 // ============ 图片后处理：自动上传本地图片到钉钉 ============
@@ -520,6 +539,7 @@ async function sendVideoMessage(
 
 /**
  * 视频后处理主函数
+ * 返回移除标记后的内容，并附带视频处理的状态提示
  */
 async function processVideoMarkers(
   content: string,
@@ -540,6 +560,7 @@ async function processVideoMarkers(
   // 提取视频标记
   const matches = [...content.matchAll(VIDEO_MARKER_PATTERN)];
   const videoInfos: VideoInfo[] = [];
+  const invalidVideos: string[] = [];
 
   for (const match of matches) {
     try {
@@ -547,26 +568,44 @@ async function processVideoMarkers(
       if (videoInfo.path && fs.existsSync(videoInfo.path)) {
         videoInfos.push(videoInfo);
         log?.info?.(`[DingTalk][Video] 提取到视频: ${videoInfo.path}`);
+      } else {
+        invalidVideos.push(videoInfo.path || '未知路径');
+        log?.warn?.(`[DingTalk][Video] 视频文件不存在: ${videoInfo.path}`);
       }
     } catch (err: any) {
       log?.warn?.(`[DingTalk][Video] 解析标记失败: ${err.message}`);
     }
   }
 
-  if (videoInfos.length === 0) {
+  if (videoInfos.length === 0 && invalidVideos.length === 0) {
     log?.info?.(`[DingTalk][Video] 未检测到视频标记`);
     return content.replace(VIDEO_MARKER_PATTERN, '').trim();
   }
 
-  log?.info?.(`[DingTalk][Video] 检测到 ${videoInfos.length} 个视频，开始处理...`);
+  // 先移除所有视频标记，保留其他文本内容
+  let cleanedContent = content.replace(VIDEO_MARKER_PATTERN, '').trim();
+
+  // 收集处理结果状态
+  const statusMessages: string[] = [];
+
+  // 处理无效视频
+  for (const invalidPath of invalidVideos) {
+    statusMessages.push(`⚠️ 视频文件不存在: ${path.basename(invalidPath)}`);
+  }
+
+  if (videoInfos.length > 0) {
+    log?.info?.(`[DingTalk][Video] 检测到 ${videoInfos.length} 个视频，开始处理...`);
+  }
 
   // 逐个处理视频
   for (const videoInfo of videoInfos) {
+    const fileName = path.basename(videoInfo.path);
     try {
       // 1. 提取元数据
       const metadata = await extractVideoMetadata(videoInfo.path, log);
       if (!metadata) {
         log?.warn?.(`[DingTalk][Video] 无法提取元数据: ${videoInfo.path}`);
+        statusMessages.push(`⚠️ 视频处理失败: ${fileName}（无法读取视频信息，请检查 ffmpeg 是否已安装）`);
         continue;
       }
 
@@ -578,6 +617,7 @@ async function processVideoMarkers(
       const thumbnail = await extractVideoThumbnail(videoInfo.path, thumbnailPath, log);
       if (!thumbnail) {
         log?.warn?.(`[DingTalk][Video] 无法生成封面: ${videoInfo.path}`);
+        statusMessages.push(`⚠️ 视频处理失败: ${fileName}（无法生成封面）`);
         continue;
       }
 
@@ -591,7 +631,8 @@ async function processVideoMarkers(
       );
       if (!videoMediaId) {
         log?.warn?.(`[DingTalk][Video] 视频上传失败: ${videoInfo.path}`);
-        fs.unlinkSync(thumbnailPath);
+        try { fs.unlinkSync(thumbnailPath); } catch {}
+        statusMessages.push(`⚠️ 视频上传失败: ${fileName}（文件可能超过 20MB 限制）`);
         continue;
       }
 
@@ -605,7 +646,8 @@ async function processVideoMarkers(
       );
       if (!picMediaId) {
         log?.warn?.(`[DingTalk][Video] 封面上传失败: ${thumbnailPath}`);
-        fs.unlinkSync(thumbnailPath);
+        try { fs.unlinkSync(thumbnailPath); } catch {}
+        statusMessages.push(`⚠️ 视频封面上传失败: ${fileName}`);
         continue;
       }
 
@@ -622,28 +664,208 @@ async function processVideoMarkers(
       );
 
       // 6. 清理临时文件
-      fs.unlinkSync(thumbnailPath);
-      log?.info?.(`[DingTalk][Video] 视频处理完成: ${path.basename(videoInfo.path)}`);
+      try { fs.unlinkSync(thumbnailPath); } catch {}
+      log?.info?.(`[DingTalk][Video] 视频处理完成: ${fileName}`);
+      statusMessages.push(`✅ 视频已发送: ${fileName}`);
     } catch (err: any) {
       log?.error?.(`[DingTalk][Video] 处理视频失败: ${err.message}`);
+      statusMessages.push(`⚠️ 视频处理异常: ${fileName}（${err.message}）`);
     }
   }
 
-  // 移除视频标记
-  return content.replace(VIDEO_MARKER_PATTERN, '').trim();
+  // 将状态信息附加到清理后的内容
+  if (statusMessages.length > 0) {
+    const statusText = statusMessages.join('\n');
+    cleanedContent = cleanedContent
+      ? `${cleanedContent}\n\n${statusText}`
+      : statusText;
+  }
+
+  return cleanedContent;
 }
 
-const FILE_EXTENSIONS = [
-  // 文档类
-  'xlsx', 'xls', 'pdf', 'doc', 'docx', 'ppt', 'pptx', 'txt', 'md', 'csv',
-  // 压缩包
-  'zip', 'rar', '7z', 'tar', 'gz', 'bz2',
-  // 代码文件
-  'py', 'js', 'ts', 'jsx', 'tsx', 'java', 'cpp', 'c', 'h', 'go', 'rs',
-  'json', 'xml', 'yaml', 'yml', 'html', 'css', 'scss', 'less',
-  // 其他
-  'log', 'sql', 'sh', 'bat', 'conf', 'ini', 'cfg', 'properties',
-];
+// ============ 音频后处理：提取音频标记并发送语音消息 ============
+
+/**
+ * 音频标记正则：[DINGTALK_AUDIO]{"path":"..."}[/DINGTALK_AUDIO]
+ */
+const AUDIO_MARKER_PATTERN = /\[DINGTALK_AUDIO\]({.*?})\[\/DINGTALK_AUDIO\]/g;
+
+/** 音频大小限制：20MB */
+const MAX_AUDIO_SIZE = 20 * 1024 * 1024;
+
+/** 音频信息接口 */
+interface AudioInfo {
+  path: string;
+}
+
+/**
+ * 提取音频时长（毫秒）
+ */
+async function extractAudioDuration(
+  filePath: string,
+  log?: any,
+): Promise<number | null> {
+  try {
+    const ffmpeg = require('fluent-ffmpeg');
+    const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
+    ffmpeg.setFfmpegPath(ffmpegPath);
+
+    return new Promise((resolve, reject) => {
+      ffmpeg.ffprobe(filePath, (err: any, metadata: any) => {
+        if (err) {
+          log?.error?.(`[DingTalk][Audio] 提取时长失败: ${err.message}`);
+          return reject(err);
+        }
+
+        const durationSec = metadata.format?.duration || 0;
+        const durationMs = Math.floor(durationSec * 1000);
+        log?.info?.(`[DingTalk][Audio] 时长: ${durationMs}ms (${durationSec}s)`);
+        resolve(durationMs);
+      });
+    });
+  } catch (err: any) {
+    log?.error?.(`[DingTalk][Audio] ffprobe 失败: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * 发送语音消息到钉钉
+ */
+async function sendAudioMessage(
+  sessionWebhook: string,
+  mediaId: string,
+  duration: number,
+  oapiToken: string,
+  log?: any,
+): Promise<void> {
+  try {
+    const payload = {
+      msgtype: 'audio',
+      audio: {
+        mediaId: mediaId,
+        duration: duration.toString(),
+      },
+    };
+
+    log?.info?.(`[DingTalk][Audio] 发送语音消息: duration=${duration}ms`);
+    const resp = await axios.post(sessionWebhook, payload, {
+      headers: {
+        'x-acs-dingtalk-access-token': oapiToken,
+        'Content-Type': 'application/json',
+      },
+      timeout: 10_000,
+    });
+
+    if (resp.data?.success !== false) {
+      log?.info?.(`[DingTalk][Audio] 语音消息发送成功`);
+    } else {
+      log?.error?.(`[DingTalk][Audio] 语音消息发送失败: ${JSON.stringify(resp.data)}`);
+    }
+  } catch (err: any) {
+    log?.error?.(`[DingTalk][Audio] 发送失败: ${err.message}`);
+  }
+}
+
+/**
+ * 音频后处理主函数
+ */
+async function processAudioMarkers(
+  content: string,
+  sessionWebhook: string,
+  config: any,
+  oapiToken: string | null,
+  log?: any,
+): Promise<string> {
+  if (!oapiToken) {
+    log?.warn?.(`[DingTalk][Audio] 无 oapiToken，跳过音频处理`);
+    return content;
+  }
+
+  const fs = await import('fs');
+  const path = await import('path');
+
+  // 提取音频标记
+  const matches = [...content.matchAll(AUDIO_MARKER_PATTERN)];
+  const audioInfos: AudioInfo[] = [];
+  const invalidAudios: string[] = [];
+
+  for (const match of matches) {
+    try {
+      const audioInfo = JSON.parse(match[1]) as AudioInfo;
+      if (audioInfo.path && fs.existsSync(audioInfo.path)) {
+        audioInfos.push(audioInfo);
+        log?.info?.(`[DingTalk][Audio] 提取到音频: ${audioInfo.path}`);
+      } else {
+        invalidAudios.push(audioInfo.path || '未知路径');
+        log?.warn?.(`[DingTalk][Audio] 音频文件不存在: ${audioInfo.path}`);
+      }
+    } catch (err: any) {
+      log?.warn?.(`[DingTalk][Audio] 解析标记失败: ${err.message}`);
+    }
+  }
+
+  if (audioInfos.length === 0 && invalidAudios.length === 0) {
+    log?.info?.(`[DingTalk][Audio] 未检测到音频标记`);
+    return content.replace(AUDIO_MARKER_PATTERN, '').trim();
+  }
+
+  // 先移除所有音频标记
+  let cleanedContent = content.replace(AUDIO_MARKER_PATTERN, '').trim();
+
+  const statusMessages: string[] = [];
+
+  for (const invalidPath of invalidAudios) {
+    statusMessages.push(`⚠️ 音频文件不存在: ${path.basename(invalidPath)}`);
+  }
+
+  if (audioInfos.length > 0) {
+    log?.info?.(`[DingTalk][Audio] 检测到 ${audioInfos.length} 个音频，开始处理...`);
+  }
+
+  for (const audioInfo of audioInfos) {
+    const fileName = path.basename(audioInfo.path);
+    try {
+      // 1. 提取时长
+      const duration = await extractAudioDuration(audioInfo.path, log);
+      if (duration === null) {
+        statusMessages.push(`⚠️ 音频处理失败: ${fileName}（无法读取音频信息，请检查 ffmpeg 是否已安装）`);
+        continue;
+      }
+
+      // 2. 上传音频
+      const mediaId = await uploadMediaToDingTalk(
+        audioInfo.path,
+        'voice',
+        oapiToken,
+        MAX_AUDIO_SIZE,
+        log,
+      );
+      if (!mediaId) {
+        statusMessages.push(`⚠️ 音频上传失败: ${fileName}（文件可能超过 20MB 限制）`);
+        continue;
+      }
+
+      // 3. 发送语音消息
+      await sendAudioMessage(sessionWebhook, mediaId, duration, oapiToken, log);
+      statusMessages.push(`✅ 音频已发送: ${fileName}`);
+      log?.info?.(`[DingTalk][Audio] 音频处理完成: ${fileName}`);
+    } catch (err: any) {
+      log?.error?.(`[DingTalk][Audio] 处理音频失败: ${err.message}`);
+      statusMessages.push(`⚠️ 音频处理异常: ${fileName}（${err.message}）`);
+    }
+  }
+
+  if (statusMessages.length > 0) {
+    const statusText = statusMessages.join('\n');
+    cleanedContent = cleanedContent
+      ? `${cleanedContent}\n\n${statusText}`
+      : statusText;
+  }
+
+  return cleanedContent;
+}
 
 /** 文件大小限制：20MB（字节） */
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
@@ -668,14 +890,9 @@ function extractFileMarkers(content: string, log?: any): { cleanedContent: strin
       const fileInfo = JSON.parse(match[1]) as FileInfo;
 
       // 验证必需字段
-      if (fileInfo.path && fileInfo.fileName && fileInfo.fileType) {
-        // 验证文件类型
-        if (FILE_EXTENSIONS.includes(fileInfo.fileType.toLowerCase())) {
-          fileInfos.push(fileInfo);
-          log?.info?.(`[DingTalk][File] 提取到文件标记: ${fileInfo.fileName}`);
-        } else {
-          log?.warn?.(`[DingTalk][File] 不支持的文件类型: ${fileInfo.fileType}`);
-        }
+      if (fileInfo.path && fileInfo.fileName) {
+        fileInfos.push(fileInfo);
+        log?.info?.(`[DingTalk][File] 提取到文件标记: ${fileInfo.fileName}`);
       }
     } catch (err: any) {
       log?.warn?.(`[DingTalk][File] 解析文件标记失败: ${match[1]}, 错误: ${err.message}`);
@@ -730,6 +947,7 @@ async function sendFileMessage(
 
 /**
  * 处理文件标记：提取、上传、发送独立消息
+ * 返回移除标记后的内容，并附带文件处理的状态提示
  */
 async function processFileMarkers(
   content: string,
@@ -747,19 +965,47 @@ async function processFileMarkers(
 
   if (fileInfos.length === 0) {
     log?.info?.(`[DingTalk][File] 未检测到文件标记`);
-    return content;
+    return cleanedContent;
   }
 
   log?.info?.(`[DingTalk][File] 检测到 ${fileInfos.length} 个文件标记，开始处理...`);
 
+  const statusMessages: string[] = [];
+
+  const fs = await import('fs');
+
   // 逐个上传并发送文件消息
   for (const fileInfo of fileInfos) {
+    // 预检查：文件是否存在、是否超限
+    const absPath = toLocalPath(fileInfo.path);
+    if (!fs.existsSync(absPath)) {
+      statusMessages.push(`⚠️ 文件不存在: ${fileInfo.fileName}`);
+      continue;
+    }
+    const stats = fs.statSync(absPath);
+    if (stats.size > MAX_FILE_SIZE) {
+      const sizeMB = (stats.size / (1024 * 1024)).toFixed(1);
+      const maxMB = (MAX_FILE_SIZE / (1024 * 1024)).toFixed(0);
+      statusMessages.push(`⚠️ 文件过大无法发送: ${fileInfo.fileName}（${sizeMB}MB，限制 ${maxMB}MB）`);
+      continue;
+    }
+
     const mediaId = await uploadMediaToDingTalk(fileInfo.path, 'file', oapiToken, MAX_FILE_SIZE, log);
     if (mediaId) {
       await sendFileMessage(config, sessionWebhook, fileInfo, mediaId, oapiToken, log);
+      statusMessages.push(`✅ 文件已发送: ${fileInfo.fileName}`);
     } else {
       log?.error?.(`[DingTalk][File] 文件上传失败，跳过发送: ${fileInfo.fileName}`);
+      statusMessages.push(`⚠️ 文件上传失败: ${fileInfo.fileName}`);
     }
+  }
+
+  // 将状态信息附加到清理后的内容
+  if (statusMessages.length > 0) {
+    const statusText = statusMessages.join('\n');
+    return cleanedContent
+      ? `${cleanedContent}\n\n${statusText}`
+      : statusText;
   }
 
   return cleanedContent;
@@ -1194,10 +1440,11 @@ async function handleDingTalkMessage(params: {
         // 节流更新，避免过于频繁
         const now = Date.now();
         if (now - lastUpdateTime >= updateInterval) {
-          // 实时清理文件和视频标记（避免用户在流式过程中看到标记）
+          // 实时清理文件、视频、音频标记（避免用户在流式过程中看到标记）
           const displayContent = accumulated
             .replace(FILE_MARKER_PATTERN, '')
             .replace(VIDEO_MARKER_PATTERN, '')
+            .replace(AUDIO_MARKER_PATTERN, '')
             .trim();
           await streamAICard(card, displayContent, false, log);
           lastUpdateTime = now;
@@ -1210,13 +1457,17 @@ async function handleDingTalkMessage(params: {
       log?.info?.(`[DingTalk][Media] 开始图片后处理，内容片段="${accumulated.slice(0, 200)}..."`);
       accumulated = await processLocalImages(accumulated, oapiToken, log);
 
-      // 后处理02：提取文件标记并发送独立文件消息
-      log?.info?.(`[DingTalk][File] 开始文件后处理`);
-      accumulated = await processFileMarkers(accumulated, sessionWebhook, dingtalkConfig, oapiToken, log);
-
-      // 后处理03：提取视频标记并发送视频消息
+      // 后处理02：提取视频标记并发送视频消息
       log?.info?.(`[DingTalk][Video] 开始视频后处理`);
       accumulated = await processVideoMarkers(accumulated, sessionWebhook, dingtalkConfig, oapiToken, log);
+
+      // 后处理03：提取音频标记并发送语音消息
+      log?.info?.(`[DingTalk][Audio] 开始音频后处理`);
+      accumulated = await processAudioMarkers(accumulated, sessionWebhook, dingtalkConfig, oapiToken, log);
+
+      // 后处理04：提取文件标记并发送独立文件消息
+      log?.info?.(`[DingTalk][File] 开始文件后处理`);
+      accumulated = await processFileMarkers(accumulated, sessionWebhook, dingtalkConfig, oapiToken, log);
 
       // 完成 AI Card
       await finishAICard(card, accumulated, log);
