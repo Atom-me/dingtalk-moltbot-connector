@@ -1,13 +1,13 @@
 {
   "name": "@openclaw/dingtalk-connector",
-  "version": "0.6.0",
-  "description": "DingTalk (钉钉) channel plugin for OpenClaw — Stream mode with AI Card streaming",
+  "version": "0.6.0-clawdbot",
+  "description": "DingTalk (钉钉) channel plugin for OpenClaw/Clawdbot/Moltbot — Stream mode with AI Card streaming",
   "main": "plugin.ts",
   "type": "module",
   "scripts": {
     "build": "echo 'No build needed - jiti loads TS at runtime'"
   },
-  "keywords": ["openclaw", "dingtalk", "channel", "stream", "ai-card"],
+  "keywords": ["openclaw", "clawdbot", "moltbot", "dingtalk", "channel", "stream", "ai-card"],
   "author": "DingTalk Real Team",
   "license": "MIT",
   "dependencies": {
@@ -17,6 +17,11 @@
     "@ffmpeg-installer/ffmpeg": "^1.1.0"
   },
   "openclaw": {
+    "extensions": ["./plugin.ts"],
+    "channels": ["dingtalk-connector"],
+    "installDependencies": true
+  },
+  "clawdbot": {
     "extensions": ["./plugin.ts"],
     "channels": ["dingtalk-connector"],
     "installDependencies": true
